@@ -34,6 +34,8 @@ class UsaTriathlonScraper(object):
             'SearchCriteria': ''
         }
 
+        # XXX Cache json results string using key like
+        # https://rankings.usatriathlon.org/Event/List/{year}/{race_type_id}/{country_id}/{state_id}/
         resp = self.session.post(url, json=data)
         json_events = resp.json()
 
@@ -53,7 +55,8 @@ class UsaTriathlonScraper(object):
         # corresponds to event_id 301597 and race_type_id 2 (duathlon)
         #
         url = f'https://rankings.usatriathlon.org/Event/ViewEvent/{event_id}'
-        
+
+        # XXX Cache html results for 'https://rankings.usatriathlon.org/Event/ViewEvent/{event_id}'
         resp = self.session.get(url)
         soup = BeautifulSoup(resp.text, 'html.parser')
 
@@ -84,10 +87,12 @@ class UsaTriathlonScraper(object):
             'FirstName': ''
         }
 
+        # XXX Cache json_results string using key like
+        # https://rankings.usatriathlon.org/RaceResult/GetResults/{race_id}
         resp = self.session.post(url, json=data)
         json_results = resp.json()
 
-        return json_results['Results']
+        return json.loads(json_results['Results'])
     
     def get_dropdown_options(self):
         opts = {}
@@ -130,6 +135,7 @@ class UsaTriathlonScraper(object):
 
         # XXX Are event_ids unique across years?
         for e in events:
+            e = '249854'
             races = self.get_races_at_event(e)
             for race_id in races:
                 race_data = self.get_race_data(race_id)
