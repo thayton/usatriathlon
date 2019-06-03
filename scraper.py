@@ -70,7 +70,9 @@ class UsaTriathlonScraper(object):
         data = {
             'RaceId': race_id
         }
-
+        
+        # XXX Cache json_results string using key like
+        # https://rankings.usatriathlon.org/Race/GetRaceData/{race_id}
         resp = self.session.post(url, json=data)
         json_results = resp.json()
 
