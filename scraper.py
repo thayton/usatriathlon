@@ -1,6 +1,8 @@
 import os
 import csv
+import time
 import json
+import logging
 import pathlib
 import requests
 
@@ -23,6 +25,12 @@ class UsaTriathlonScraper(object):
         self.url = 'https://rankings.usatriathlon.org/Event/Events'
         self.session = requests.Session()
 
+        FORMAT = "%(asctime)s [ %(filename)s:%(lineno)s - %(funcName)s() ] %(message)s"
+        logging.basicConfig(format=FORMAT, datefmt='%Y-%m-%d %H:%M:%S')
+
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+        
     def event_filename(self, year, state, event):
         return f'results/{year}/{state["CountryId"]}/{state["StateCode"]}/{event["EventId"]}/event.csv'        
 
@@ -62,8 +70,6 @@ class UsaTriathlonScraper(object):
             'SearchCriteria': ''
         }
 
-        # XXX Cache json results string using key like
-        # https://rankings.usatriathlon.org/Event/List/{year}/{race_type_id}/{country_id}/{state_id}/
         resp = self.session.post(url, json=data)
         json_events = resp.json()
 
@@ -127,8 +133,12 @@ class UsaTriathlonScraper(object):
         # https://rankings.usatriathlon.org/RaceResult/GetResults/{race_id}
         resp = self.session.post(url, json=data)
         json_results = resp.json()
-        race_results = json.loads(json_results['Results'])
-        
+
+        if json_results['Results'] is not None:
+            race_results = json.loads(json_results['Results'])
+        else:
+            race_results = []
+            
         return race_results
     
     def get_dropdown_options(self):
@@ -154,7 +164,7 @@ class UsaTriathlonScraper(object):
         for year in opts['years']:
             for race_type in opts['race_types']:
                 for state in opts['states']:
-                    print(f"{year}-{race_type['Value']}-{state['CountryId']}-{state['StateName']}")
+                    self.logger.debug(f"{year}-{race_type['Value']}-{state['CountryId']}-{state['StateName']}")
                     yield ( year, race_type, state )
         
     def scrape(self):
@@ -165,33 +175,37 @@ class UsaTriathlonScraper(object):
                 state['CountryId'],
                 state['StateId']
             )
-            print(json.dumps(events, indent=2))
-            break
 
-        # Note that the race_type_id we use in the search becomes irrelevant later
-        # as we take list of all races (and race_types) from the event page. In other
-        # words, even though we search for Triathlon events, all type of events will
-        # be listed on the event page.
-        # XXX Are event_ids unique across years?
-        for e in events:
-            # Save event information
-            event_id = e['EventId']            
-            event_file = self.event_filename(year, state, e)
-            self.csv_save(event_file, [e], e.keys())
-            
-            event_id = '249854'
-            
-            races = self.get_races_at_event(event_id)
-            for race_id in races:
-                race_data = self.get_race_data(race_id)
-                race_data_file = self.race_data_filename(year, race_data['RaceType'], state, e, race_id)
-                self.csv_save(race_data_file, [race_data], race_data.keys())
+            # Note that the race_type_id we use in the search becomes irrelevant later
+            # as we take list of all races (and race_types) from the event page. In other
+            # words, even though we search for Triathlon events, all type of events will
+            # be listed on the event page.
+            for e in events:
+                event_file = self.event_filename(year, state, e)
+                self.csv_save(event_file, [e], e.keys())
+
+                self.logger.debug(f'Getting races at event {e["EventId"]}')                
+                races = self.get_races_at_event(e['EventId'])
                 
-                # if race_data['ResultsType'] is set then there are results...
-                race_results = self.get_race_results(race_id)
-                race_results_file = self.race_results_filename(year, race_data['RaceType'], state, e, race_id)                
-                
-                self.csv_save(race_results_file, race_results, race_results[0].keys())
+                for race_id in races:
+                    self.logger.debug(f'Getting race data for {race_id} at event {e["EventId"]}')
+                    race_data = self.get_race_data(race_id)
+                    race_data_file = self.race_data_filename(year, race_data['RaceType'], state, e, race_id)
+                    self.csv_save(race_data_file, [race_data], race_data.keys())
+
+                    time.sleep(0.5)
+                    
+                    # if race_data['ResultsType'] is set then there are results...
+                    if race_data['ResultsType'] == '':
+                        continue
+                    
+                    self.logger.debug(f'Getting race results for {race_id} at event {e["EventId"]}')
+                    race_results = self.get_race_results(race_id)
+                    race_results_file = self.race_results_filename(year, race_data['RaceType'], state, e, race_id)
+                    if len(race_results) > 0:
+                        self.csv_save(race_results_file, race_results, race_results[0].keys())
+
+                    time.sleep(1.5)                    
                 
 if __name__ == '__main__':
     scraper = UsaTriathlonScraper()
