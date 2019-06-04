@@ -4,8 +4,13 @@ import time
 import json
 import logging
 import pathlib
+import datetime
+import argparse
 import requests
 
+from redis import StrictRedis
+from redis.exceptions import RedisError
+from rediscache import RedisCache
 from bs4 import BeautifulSoup
 
 # (year, race_type_id, country_id, state_id)
@@ -30,6 +35,25 @@ class UsaTriathlonScraper(object):
 
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
+
+        self.cache = None
+        self.init_cache()
+
+    def init_cache(self):
+        redis_config = {
+            'host': 'localhost',
+            'port': 6379,
+            'db': 0,
+            'password': 'foobared'
+        }
+
+        client = StrictRedis(**redis_config)
+        try:
+            client.ping()
+        except RedisError as ex:
+            exit(f'Failed to connect to Redis - {ex}, exiting...' )
+
+        self.cache = RedisCache(client=client)
         
     def event_filename(self, year, state, event):
         return f'results/{year}/{state["CountryId"]}/{state["StateCode"]}/{event["EventId"]}/event.csv'        
@@ -58,7 +82,7 @@ class UsaTriathlonScraper(object):
         
     def get_event_list(self, year, race_type_id, country_id, state_id):
         '''
-        Return a list of event IDs for the given year,race_type,state
+        Search for a list of event IDs for the given year, race_type, country, state
         '''
         url = 'https://rankings.usatriathlon.org/Event/List'
         data = {
@@ -92,10 +116,18 @@ class UsaTriathlonScraper(object):
         # corresponds to event_id 301597 and race_type_id 2 (duathlon)
         #
         url = f'https://rankings.usatriathlon.org/Event/ViewEvent/{event_id}'
+        
+        try:
+            html = self.cache[url]
+        except KeyError:
+            time.sleep(1.5)
+            
+            resp = self.session.get(url)                
+            html = resp.text
+            
+            self.cache[url] = html
 
-        # XXX Cache html results for 'https://rankings.usatriathlon.org/Event/ViewEvent/{event_id}'
-        resp = self.session.get(url)
-        soup = BeautifulSoup(resp.text, 'html.parser')
+        soup = BeautifulSoup(html, 'html.parser')
 
         for li in soup.select('ul#racesList > li.raceLink'):
             race_ids.append(li['raceid'])
@@ -108,11 +140,18 @@ class UsaTriathlonScraper(object):
             'RaceId': race_id
         }
         
-        # XXX Cache json_results string using key like
-        # https://rankings.usatriathlon.org/Race/GetRaceData/{race_id}
-        resp = self.session.post(url, json=data)
-        json_results = resp.json()
-
+        key = f'https://rankings.usatriathlon.org/Race/GetRaceData/{race_id}'
+        try:
+            text = self.cache[key]
+        except KeyError:
+            time.sleep(1.5)
+            
+            resp = self.session.post(url, json=data)
+            text = resp.text
+            
+            self.cache[key] = text
+        
+        json_results = json.loads(text)
         return json_results['Race']
     
     def get_race_results(self, race_id):
@@ -129,10 +168,18 @@ class UsaTriathlonScraper(object):
             'FirstName': ''
         }
 
-        # XXX Cache json_results string using key like
-        # https://rankings.usatriathlon.org/RaceResult/GetResults/{race_id}
-        resp = self.session.post(url, json=data)
-        json_results = resp.json()
+        key = f'https://rankings.usatriathlon.org/RaceResult/GetResults/{race_id}'
+        try:
+            text = self.cache[key]
+        except KeyError:
+            time.sleep(1.5)
+                        
+            resp = self.session.post(url, json=data)
+            text = resp.text
+            
+            self.cache[key] = text
+        
+        json_results = json.loads(text)
 
         if json_results['Results'] is not None:
             race_results = json.loads(json_results['Results'])
@@ -159,16 +206,22 @@ class UsaTriathlonScraper(object):
 
         return opts
 
-    def search_opts(self):
+    def search_opts(self, year_filter=None):
         opts = self.get_dropdown_options()
-        for year in opts['years']:
+        
+        if year_filter:
+            years = [ year_filter ]
+        else:
+            years = opts['years']
+            
+        for year in years:
             for race_type in opts['race_types']:
                 for state in opts['states']:
                     self.logger.debug(f"{year}-{race_type['Value']}-{state['CountryId']}-{state['StateName']}")
                     yield ( year, race_type, state )
         
-    def scrape(self):
-        for year, race_type, state in self.search_opts():
+    def scrape(self, year_filter=None):
+        for year, race_type, state in self.search_opts(year_filter):
             events = self.get_event_list(
                 year,
                 race_type['RaceTypeId'],
@@ -193,8 +246,6 @@ class UsaTriathlonScraper(object):
                     race_data_file = self.race_data_filename(year, race_data['RaceType'], state, e, race_id)
                     self.csv_save(race_data_file, [race_data], race_data.keys())
 
-                    time.sleep(0.5)
-                    
                     # if race_data['ResultsType'] is set then there are results...
                     if race_data['ResultsType'] == '':
                         continue
@@ -205,8 +256,15 @@ class UsaTriathlonScraper(object):
                     if len(race_results) > 0:
                         self.csv_save(race_results_file, race_results, race_results[0].keys())
 
-                    time.sleep(1.5)                    
+                # Mark event as complete so we don't hit it again in separate search...
                 
 if __name__ == '__main__':
+    current_year = int(datetime.datetime.now().year)
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-y", "--year", type=int, help="Limit search to specific year", choices=range(current_year, 2008, -1))
+
+    args = parser.parse_args()
+
     scraper = UsaTriathlonScraper()
-    scraper.scrape()
+    scraper.scrape(args.year)
